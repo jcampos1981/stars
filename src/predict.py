@@ -1,6 +1,12 @@
 """
 Prediction script for MALLORN TDE Classification Challenge
-Generates submission file with predictions
+
+This script:
+1. Loads test log file
+2. Extracts features from test lightcurves
+3. Loads trained model
+4. Generates predictions
+5. Creates submission.csv file
 """
 
 import pandas as pd
@@ -8,39 +14,27 @@ import numpy as np
 from pathlib import Path
 import joblib
 from datetime import datetime
+import warnings
+warnings.filterwarnings('ignore')
 
 from data_loader import DataLoader
 from feature_engineer import LightcurveFeatureEngineer
 from train import TDEClassifier
 
 
-def generate_submission(test_df: pd.DataFrame, predictions: np.ndarray, output_path: str = "submission.csv"):
+def generate_submission(object_ids: np.ndarray, predictions: np.ndarray,
+                       output_path: str = "submission.csv"):
     """
     Generate submission file.
 
     Args:
-        test_df: Test DataFrame (to get IDs)
+        object_ids: Array of object IDs
         predictions: Array of predictions (0 or 1)
         output_path: Path to save submission file
     """
-    # Find ID column
-    id_col = None
-    for col in ['id', 'source_id', 'object_id', 'ID', 'Source_ID', 'Object_ID']:
-        if col in test_df.columns:
-            id_col = col
-            break
-
-    if id_col is None:
-        # If no ID column found, create one
-        print("Warning: No ID column found, using index as ID")
-        ids = np.arange(len(predictions))
-        id_col = 'id'
-    else:
-        ids = test_df[id_col].values
-
     # Create submission DataFrame
     submission = pd.DataFrame({
-        id_col: ids,
+        'object_id': object_ids,
         'prediction': predictions
     })
 
@@ -60,55 +54,80 @@ def generate_submission(test_df: pd.DataFrame, predictions: np.ndarray, output_p
 
 def main():
     """Main prediction pipeline."""
-    print("=" * 60)
-    print("MALLORN TDE Classification - Prediction Pipeline")
-    print("=" * 60)
+    print("=" * 70)
+    print(" MALLORN TDE Classification - Prediction Pipeline")
+    print("=" * 70)
 
     # Paths
     model_path = Path("models/tde_classifier.pkl")
-
-    # Check if model exists
-    if not model_path.exists():
-        print(f"\nError: Model not found at {model_path}")
-        print("Please train the model first by running: python src/train.py")
-        return
+    features_path = Path("data/processed/test_features.csv")
 
     # Initialize components
     loader = DataLoader(data_dir="data/raw")
     engineer = LightcurveFeatureEngineer()
 
-    # Load test data
-    print("\n1. Loading test data...")
-    test_df = loader.load_test_data()
+    # Check if model exists
+    if not model_path.exists():
+        print(f"\nERROR: Model not found at {model_path}")
+        print("Please train the model first by running: python src/train.py")
+        return
 
-    # Prepare data
-    print("\n2. Preparing test data...")
-    X_test, feature_names = loader.prepare_data(test_df, is_training=False)
+    # Step 1: Load test log
+    print("\n[1/5] Loading test log...")
+    test_log = loader.load_test_log()
 
-    print(f"\nTest dataset shape: {X_test.shape}")
-    print(f"Number of features: {len(feature_names)}")
+    # For initial testing, you can limit to a subset
+    # Uncomment the next line to use only 100 objects for quick testing
+    # test_log = test_log.head(100)
 
-    # Engineer features
-    print("\n3. Engineering features...")
-    X_test_engineered = engineer.engineer_features(X_test)
+    # Step 2: Extract features from lightcurves
+    print("\n[2/5] Extracting features from test lightcurves...")
+    print("This may take a while...")
 
-    # Load trained model
-    print("\n4. Loading trained model...")
+    # Check if features already exist
+    if features_path.exists():
+        print(f"Loading existing features from {features_path}...")
+        features_df = pd.read_csv(features_path)
+        print(f"Loaded features for {len(features_df)} objects")
+    else:
+        features_df = engineer.process_multiple_objects(
+            log_df=test_log,
+            lightcurve_loader_func=loader.load_lightcurve,
+            is_training=False
+        )
+
+        # Save extracted features
+        features_path.parent.mkdir(parents=True, exist_ok=True)
+        features_df.to_csv(features_path, index=False)
+        print(f"Features saved to {features_path}")
+
+    # Step 3: Prepare features for prediction
+    print("\n[3/5] Preparing features...")
+
+    object_ids = features_df['object_id'].values
+    X_test = features_df.drop(columns=['object_id'])
+
+    print(f"Test features shape: {X_test.shape}")
+
+    # Step 4: Load trained model
+    print("\n[4/5] Loading trained model...")
     classifier = TDEClassifier.load(str(model_path))
     print(f"Model loaded successfully: {classifier.model_type}")
 
-    # Make predictions
-    print("\n5. Making predictions...")
-    predictions = classifier.predict(X_test_engineered)
+    # Step 5: Make predictions
+    print("\n[5/5] Making predictions...")
+    predictions = classifier.predict(X_test)
 
     # Get prediction probabilities (useful for analysis)
     try:
-        probabilities = classifier.predict_proba(X_test_engineered)
+        probabilities = classifier.predict_proba(X_test)
         print(f"\nPrediction confidence statistics:")
-        print(f"  Mean probability for predicted class: {np.mean([probabilities[i, predictions[i]] for i in range(len(predictions))]):.3f}")
+        mean_conf = np.mean([probabilities[i, predictions[i]] for i in range(len(predictions))])
+        print(f"  Mean probability for predicted class: {mean_conf:.3f}")
 
         # Save probabilities for analysis
         prob_df = pd.DataFrame({
+            'object_id': object_ids,
             'prob_non_tde': probabilities[:, 0],
             'prob_tde': probabilities[:, 1],
             'prediction': predictions
@@ -120,20 +139,35 @@ def main():
         print(f"Could not compute probabilities: {e}")
 
     # Generate submission file
-    print("\n6. Generating submission file...")
+    print("\nGenerating submission file...")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     submission_filename = f"submission_{timestamp}.csv"
 
-    submission = generate_submission(test_df, predictions, output_path=submission_filename)
+    submission = generate_submission(object_ids, predictions, output_path=submission_filename)
 
     # Also save a copy without timestamp for convenience
     submission.to_csv("submission.csv", index=False)
     print(f"\nSubmission also saved as: submission.csv")
 
-    print("\n" + "=" * 60)
-    print("Prediction complete!")
+    # Validate submission format
+    print("\nValidating submission format...")
+    sample_submission_path = Path("data/raw/sample_submission.csv")
+    if sample_submission_path.exists():
+        sample = pd.read_csv(sample_submission_path)
+        print(f"Sample submission has {len(sample)} objects")
+        print(f"Your submission has {len(submission)} objects")
+
+        if len(submission) == len(sample):
+            print("✓ Submission has correct number of objects!")
+        else:
+            print("⚠ Warning: Number of objects doesn't match sample submission")
+
+    print("\n" + "=" * 70)
+    print(" PREDICTION COMPLETE!")
+    print("=" * 70)
     print(f"Submission file ready: {submission_filename}")
-    print("=" * 60)
+    print("You can now submit this file to the competition!")
+    print("=" * 70)
 
     return submission
 

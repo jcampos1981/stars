@@ -1,220 +1,292 @@
 """
-Feature engineering for astronomical lightcurve data
+Feature engineering for MALLORN TDE Classification Challenge
+
+Extracts features from:
+- Lightcurve time series data (per filter)
+- Object metadata (redshift, extinction)
 """
 
 import numpy as np
 import pandas as pd
-from typing import List, Dict, Any
+from typing import Dict, List, Tuple
 from scipy import stats
+from tqdm import tqdm
+import warnings
+warnings.filterwarnings('ignore')
 
 
 class LightcurveFeatureEngineer:
     """
-    Extract features from astronomical lightcurve data.
+    Extract features from astronomical lightcurve time series.
 
-    This class provides methods to engineer features that are useful
-    for classifying astronomical transients, particularly TDEs.
+    Features extracted per filter (u, g, r, i, z, y):
+    - Statistical: mean, std, median, min, max, range, skewness, kurtosis
+    - Temporal: duration, number of observations, cadence statistics
+    - Rise/Fall: peak time, rise/fall rates, rise/fall times
+    - Flux-based: peak flux, total variation, SNR
     """
 
     def __init__(self):
+        self.filters = ['u', 'g', 'r', 'i', 'z', 'y']
         self.feature_names = []
 
-    def extract_statistical_features(self, values: np.ndarray) -> Dict[str, float]:
+    def extract_filter_features(self, times: np.ndarray, fluxes: np.ndarray,
+                                flux_errs: np.ndarray, filter_name: str) -> Dict[str, float]:
         """
-        Extract statistical features from a time series.
+        Extract features for a single filter's lightcurve.
 
         Args:
-            values: Array of measurements
+            times: Observation times (MJD)
+            fluxes: Flux measurements (microjansky)
+            flux_errs: Flux uncertainties
+            filter_name: Filter name (u, g, r, i, z, y)
 
         Returns:
-            Dictionary of statistical features
+            Dictionary of features with filter-specific names
         """
         features = {}
+        prefix = f"{filter_name}_"
 
-        if len(values) == 0 or np.all(np.isnan(values)):
-            return {
-                'mean': 0, 'std': 0, 'median': 0, 'min': 0, 'max': 0,
-                'range': 0, 'skewness': 0, 'kurtosis': 0,
-                'percentile_25': 0, 'percentile_75': 0, 'iqr': 0
-            }
+        # Handle empty or all-NaN data
+        if len(times) == 0 or np.all(np.isnan(fluxes)):
+            return self._get_empty_features(prefix)
 
-        # Remove NaN values
-        values = values[~np.isnan(values)]
-
-        if len(values) == 0:
-            return {
-                'mean': 0, 'std': 0, 'median': 0, 'min': 0, 'max': 0,
-                'range': 0, 'skewness': 0, 'kurtosis': 0,
-                'percentile_25': 0, 'percentile_75': 0, 'iqr': 0
-            }
-
-        features['mean'] = np.mean(values)
-        features['std'] = np.std(values)
-        features['median'] = np.median(values)
-        features['min'] = np.min(values)
-        features['max'] = np.max(values)
-        features['range'] = features['max'] - features['min']
-
-        # Higher order moments
-        if len(values) > 1:
-            features['skewness'] = stats.skew(values)
-            features['kurtosis'] = stats.kurtosis(values)
-        else:
-            features['skewness'] = 0
-            features['kurtosis'] = 0
-
-        # Percentiles
-        features['percentile_25'] = np.percentile(values, 25)
-        features['percentile_75'] = np.percentile(values, 75)
-        features['iqr'] = features['percentile_75'] - features['percentile_25']
-
-        return features
-
-    def extract_temporal_features(self, times: np.ndarray, values: np.ndarray) -> Dict[str, float]:
-        """
-        Extract time-domain features.
-
-        Args:
-            times: Array of observation times
-            values: Array of measurements
-
-        Returns:
-            Dictionary of temporal features
-        """
-        features = {}
-
-        if len(times) == 0 or len(values) == 0:
-            return {'duration': 0, 'num_observations': 0, 'mean_cadence': 0}
-
-        # Remove NaN pairs
-        mask = ~(np.isnan(times) | np.isnan(values))
+        # Remove NaN entries
+        mask = ~(np.isnan(times) | np.isnan(fluxes) | np.isnan(flux_errs))
         times = times[mask]
-        values = values[mask]
+        fluxes = fluxes[mask]
+        flux_errs = flux_errs[mask]
 
         if len(times) == 0:
-            return {'duration': 0, 'num_observations': 0, 'mean_cadence': 0}
+            return self._get_empty_features(prefix)
 
         # Sort by time
         sort_idx = np.argsort(times)
         times = times[sort_idx]
-        values = values[sort_idx]
+        fluxes = fluxes[sort_idx]
+        flux_errs = flux_errs[sort_idx]
 
-        features['duration'] = times[-1] - times[0] if len(times) > 1 else 0
-        features['num_observations'] = len(times)
+        # Basic counting
+        features[f'{prefix}n_obs'] = len(times)
+
+        # Statistical features
+        features[f'{prefix}flux_mean'] = np.mean(fluxes)
+        features[f'{prefix}flux_std'] = np.std(fluxes)
+        features[f'{prefix}flux_median'] = np.median(fluxes)
+        features[f'{prefix}flux_min'] = np.min(fluxes)
+        features[f'{prefix}flux_max'] = np.max(fluxes)
+        features[f'{prefix}flux_range'] = features[f'{prefix}flux_max'] - features[f'{prefix}flux_min']
+
+        if len(fluxes) > 1:
+            features[f'{prefix}flux_skew'] = stats.skew(fluxes)
+            features[f'{prefix}flux_kurtosis'] = stats.kurtosis(fluxes)
+        else:
+            features[f'{prefix}flux_skew'] = 0
+            features[f'{prefix}flux_kurtosis'] = 0
+
+        # Percentiles
+        features[f'{prefix}flux_p25'] = np.percentile(fluxes, 25)
+        features[f'{prefix}flux_p75'] = np.percentile(fluxes, 75)
+        features[f'{prefix}flux_iqr'] = features[f'{prefix}flux_p75'] - features[f'{prefix}flux_p25']
+
+        # Temporal features
+        features[f'{prefix}duration'] = times[-1] - times[0] if len(times) > 1 else 0
 
         if len(times) > 1:
             cadence = np.diff(times)
-            features['mean_cadence'] = np.mean(cadence)
-            features['std_cadence'] = np.std(cadence)
-            features['min_cadence'] = np.min(cadence)
-            features['max_cadence'] = np.max(cadence)
+            features[f'{prefix}cadence_mean'] = np.mean(cadence)
+            features[f'{prefix}cadence_std'] = np.std(cadence)
+            features[f'{prefix}cadence_min'] = np.min(cadence)
+            features[f'{prefix}cadence_max'] = np.max(cadence)
         else:
-            features['mean_cadence'] = 0
-            features['std_cadence'] = 0
-            features['min_cadence'] = 0
-            features['max_cadence'] = 0
+            features[f'{prefix}cadence_mean'] = 0
+            features[f'{prefix}cadence_std'] = 0
+            features[f'{prefix}cadence_min'] = 0
+            features[f'{prefix}cadence_max'] = 0
+
+        # Peak and rise/fall features
+        peak_idx = np.argmax(fluxes)
+        features[f'{prefix}peak_flux'] = fluxes[peak_idx]
+        features[f'{prefix}peak_time'] = times[peak_idx]
+        features[f'{prefix}peak_flux_rel'] = (times[peak_idx] - times[0]) / features[f'{prefix}duration'] if features[f'{prefix}duration'] > 0 else 0.5
+
+        # Rise time (first to peak)
+        if peak_idx > 0:
+            features[f'{prefix}rise_time'] = times[peak_idx] - times[0]
+            features[f'{prefix}rise_rate'] = (fluxes[peak_idx] - fluxes[0]) / features[f'{prefix}rise_time'] if features[f'{prefix}rise_time'] > 0 else 0
+        else:
+            features[f'{prefix}rise_time'] = 0
+            features[f'{prefix}rise_rate'] = 0
+
+        # Fall time (peak to last)
+        if peak_idx < len(fluxes) - 1:
+            features[f'{prefix}fall_time'] = times[-1] - times[peak_idx]
+            features[f'{prefix}fall_rate'] = (fluxes[peak_idx] - fluxes[-1]) / features[f'{prefix}fall_time'] if features[f'{prefix}fall_time'] > 0 else 0
+        else:
+            features[f'{prefix}fall_time'] = 0
+            features[f'{prefix}fall_rate'] = 0
+
+        # Signal-to-noise
+        snr = fluxes / flux_errs
+        features[f'{prefix}snr_mean'] = np.mean(snr)
+        features[f'{prefix}snr_median'] = np.median(snr)
+        features[f'{prefix}snr_max'] = np.max(snr)
+
+        # Variability features
+        if features[f'{prefix}flux_mean'] != 0:
+            features[f'{prefix}coef_var'] = features[f'{prefix}flux_std'] / abs(features[f'{prefix}flux_mean'])
+        else:
+            features[f'{prefix}coef_var'] = 0
+
+        # Total absolute variation
+        if len(fluxes) > 1:
+            features[f'{prefix}total_var'] = np.sum(np.abs(np.diff(fluxes)))
+        else:
+            features[f'{prefix}total_var'] = 0
 
         return features
 
-    def extract_rise_fall_features(self, times: np.ndarray, values: np.ndarray) -> Dict[str, float]:
+    def _get_empty_features(self, prefix: str) -> Dict[str, float]:
+        """Return zero-filled features for missing data."""
+        feature_names = [
+            'n_obs', 'flux_mean', 'flux_std', 'flux_median', 'flux_min', 'flux_max',
+            'flux_range', 'flux_skew', 'flux_kurtosis', 'flux_p25', 'flux_p75', 'flux_iqr',
+            'duration', 'cadence_mean', 'cadence_std', 'cadence_min', 'cadence_max',
+            'peak_flux', 'peak_time', 'peak_flux_rel', 'rise_time', 'rise_rate',
+            'fall_time', 'fall_rate', 'snr_mean', 'snr_median', 'snr_max',
+            'coef_var', 'total_var'
+        ]
+        return {f'{prefix}{name}': 0.0 for name in feature_names}
+
+    def extract_object_features(self, lightcurve_df: pd.DataFrame,
+                                metadata: pd.Series) -> Dict[str, float]:
         """
-        Extract rise and fall characteristics of the lightcurve.
+        Extract features for a single object.
 
         Args:
-            times: Array of observation times
-            values: Array of measurements (magnitudes or fluxes)
+            lightcurve_df: DataFrame with columns [Time (MJD), Flux, Flux_err, Filter]
+            metadata: Series with object metadata (Z, EBV, etc.)
 
         Returns:
-            Dictionary of rise/fall features
+            Dictionary of all features for this object
         """
         features = {}
 
-        # Remove NaN pairs
-        mask = ~(np.isnan(times) | np.isnan(values))
-        times = times[mask]
-        values = values[mask]
+        # Add metadata features
+        features['Z'] = metadata.get('Z', 0)
+        features['Z_err'] = metadata.get('Z_err', 0)
+        features['EBV'] = metadata.get('EBV', 0)
 
-        if len(values) < 3:
-            return {
-                'peak_value': 0, 'peak_time': 0,
-                'rise_time': 0, 'fall_time': 0,
-                'rise_rate': 0, 'fall_rate': 0
-            }
+        # Extract features for each filter
+        for filter_name in self.filters:
+            filter_data = lightcurve_df[lightcurve_df['Filter'] == filter_name]
 
-        # Sort by time
-        sort_idx = np.argsort(times)
-        times = times[sort_idx]
-        values = values[sort_idx]
+            if len(filter_data) > 0:
+                times = filter_data['Time (MJD)'].values
+                fluxes = filter_data['Flux'].values
+                flux_errs = filter_data['Flux_err'].values
 
-        # Find peak (assuming higher values = brighter for flux)
-        peak_idx = np.argmax(values)
-        features['peak_value'] = values[peak_idx]
-        features['peak_time'] = times[peak_idx]
+                filter_features = self.extract_filter_features(times, fluxes, flux_errs, filter_name)
+                features.update(filter_features)
+            else:
+                # No data for this filter
+                empty_features = self._get_empty_features(f"{filter_name}_")
+                features.update(empty_features)
 
-        # Rise time (time from start to peak)
-        features['rise_time'] = times[peak_idx] - times[0] if peak_idx > 0 else 0
-
-        # Fall time (time from peak to end)
-        features['fall_time'] = times[-1] - times[peak_idx] if peak_idx < len(times) - 1 else 0
-
-        # Rise and fall rates
-        if features['rise_time'] > 0 and peak_idx > 0:
-            features['rise_rate'] = (values[peak_idx] - values[0]) / features['rise_time']
-        else:
-            features['rise_rate'] = 0
-
-        if features['fall_time'] > 0 and peak_idx < len(values) - 1:
-            features['fall_rate'] = (values[peak_idx] - values[-1]) / features['fall_time']
-        else:
-            features['fall_rate'] = 0
+        # Cross-filter features
+        features.update(self._extract_cross_filter_features(lightcurve_df))
 
         return features
 
-    def engineer_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Engineer features from the input DataFrame.
+    def _extract_cross_filter_features(self, lightcurve_df: pd.DataFrame) -> Dict[str, float]:
+        """Extract features across multiple filters."""
+        features = {}
 
-        This method assumes the DataFrame contains lightcurve data.
-        It will try to automatically detect time and magnitude/flux columns.
+        # Total number of observations across all filters
+        features['total_n_obs'] = len(lightcurve_df)
+
+        # Number of filters with data
+        features['n_filters_with_data'] = lightcurve_df['Filter'].nunique()
+
+        # Overall flux statistics
+        if len(lightcurve_df) > 0:
+            features['overall_flux_mean'] = lightcurve_df['Flux'].mean()
+            features['overall_flux_std'] = lightcurve_df['Flux'].std()
+            features['overall_flux_range'] = lightcurve_df['Flux'].max() - lightcurve_df['Flux'].min()
+
+            # Overall duration
+            features['overall_duration'] = lightcurve_df['Time (MJD)'].max() - lightcurve_df['Time (MJD)'].min()
+        else:
+            features['overall_flux_mean'] = 0
+            features['overall_flux_std'] = 0
+            features['overall_flux_range'] = 0
+            features['overall_duration'] = 0
+
+        return features
+
+    def process_multiple_objects(self, log_df: pd.DataFrame,
+                                 lightcurve_loader_func,
+                                 is_training: bool = True) -> pd.DataFrame:
+        """
+        Process multiple objects and extract features.
 
         Args:
-            df: Input DataFrame with lightcurve data
+            log_df: DataFrame with object metadata (from train_log.csv or test_log.csv)
+            lightcurve_loader_func: Function to load lightcurve for an object
+                                   Signature: func(object_id, split_name, is_training) -> DataFrame
+            is_training: Whether processing training or test data
 
         Returns:
-            DataFrame with engineered features
+            DataFrame with extracted features for all objects
         """
-        print("Engineering features from lightcurve data...")
+        print(f"\nExtracting features from {len(log_df)} objects...")
 
-        # If the DataFrame already has many numeric columns, assume they are features
-        # and just add some basic derived features
-        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        all_features = []
 
-        if len(numeric_cols) > 10:
-            print(f"Found {len(numeric_cols)} numeric columns, creating derived features...")
-            df_features = df.copy()
+        for idx, row in tqdm(log_df.iterrows(), total=len(log_df), desc="Processing objects"):
+            try:
+                object_id = row['object_id']
+                split_name = row['split']
 
-            # Add some interaction and polynomial features for key columns
-            for col in numeric_cols[:5]:  # First few columns
-                df_features[f'{col}_squared'] = df[col] ** 2
-                df_features[f'{col}_log'] = np.log1p(np.abs(df[col]))
+                # Load lightcurve
+                lc_df = lightcurve_loader_func(object_id, split_name, is_training)
 
-            # Add rolling statistics if data is sequential
-            for col in numeric_cols[:3]:
-                df_features[f'{col}_rolling_mean'] = df[col].rolling(window=3, min_periods=1).mean()
-                df_features[f'{col}_rolling_std'] = df[col].rolling(window=3, min_periods=1).std().fillna(0)
+                # Extract features
+                obj_features = self.extract_object_features(lc_df, row)
+                obj_features['object_id'] = object_id
 
-            print(f"Created {len(df_features.columns)} total features")
-            return df_features
+                # Add target if training
+                if is_training and 'target' in row:
+                    obj_features['target'] = row['target']
 
-        print("Features engineered successfully!")
-        return df
+                all_features.append(obj_features)
+
+            except Exception as e:
+                print(f"\nWarning: Error processing {object_id}: {e}")
+                # Create empty features for this object
+                obj_features = {'object_id': object_id}
+                if is_training and 'target' in row:
+                    obj_features['target'] = row['target']
+                all_features.append(obj_features)
+
+        features_df = pd.DataFrame(all_features)
+
+        # Fill any missing values with 0
+        features_df = features_df.fillna(0)
+
+        print(f"\nFeature extraction complete!")
+        print(f"Features shape: {features_df.shape}")
+        print(f"Number of features: {len(features_df.columns) - 1 - ('target' in features_df.columns)}")
+
+        return features_df
 
 
 if __name__ == "__main__":
-    # Test feature engineering
-    print("Feature engineering module ready!")
-    print("\nThis module will extract features such as:")
-    print("- Statistical features (mean, std, skewness, kurtosis)")
-    print("- Temporal features (duration, cadence)")
-    print("- Rise/fall characteristics")
-    print("- And more...")
+    print("Feature Engineering module for MALLORN TDE Classification")
+    print("\nThis module extracts features from lightcurve time series data.")
+    print("\nFeatures extracted per filter:")
+    print("  - Statistical: mean, std, median, skewness, kurtosis, percentiles")
+    print("  - Temporal: duration, observation count, cadence statistics")
+    print("  - Rise/Fall: peak flux, rise/fall times and rates")
+    print("  - Signal quality: SNR, variability")
+    print("  - Cross-filter: overall statistics")

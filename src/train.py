@@ -1,5 +1,11 @@
 """
 Training script for MALLORN TDE Classification Challenge
+
+This script:
+1. Loads training log file
+2. Extracts features from lightcurves
+3. Trains a classification model
+4. Saves the trained model and features
 """
 
 import pandas as pd
@@ -114,7 +120,7 @@ class TDEClassifier:
         """
         print(f"\nTraining {self.model_type} model...")
         print(f"Training set size: {len(X_train)}")
-        print(f"Class distribution: {np.bincount(y_train)}")
+        print(f"Class distribution: Non-TDE={np.sum(y_train == 0)}, TDE={np.sum(y_train == 1)}")
 
         # Apply SMOTE if requested and not using balanced methods
         if use_smote and self.model_type not in ['balanced_rf']:
@@ -122,7 +128,7 @@ class TDEClassifier:
             smote = SMOTE(random_state=42)
             X_train, y_train = smote.fit_resample(X_train, y_train)
             print(f"After SMOTE - Training set size: {len(X_train)}")
-            print(f"Class distribution: {np.bincount(y_train)}")
+            print(f"Class distribution: Non-TDE={np.sum(y_train == 0)}, TDE={np.sum(y_train == 1)}")
 
         # Store feature names
         if isinstance(X_train, pd.DataFrame):
@@ -211,40 +217,58 @@ class TDEClassifier:
 
 def main():
     """Main training pipeline."""
-    print("=" * 60)
-    print("MALLORN TDE Classification - Training Pipeline")
-    print("=" * 60)
+    print("=" * 70)
+    print(" MALLORN TDE Classification - Training Pipeline")
+    print("=" * 70)
 
     # Initialize components
     loader = DataLoader(data_dir="data/raw")
     engineer = LightcurveFeatureEngineer()
 
-    # Load data
-    print("\n1. Loading training data...")
-    train_df = loader.load_training_data()
+    # Step 1: Load training log
+    print("\n[1/6] Loading training log...")
+    train_log = loader.load_training_log()
 
-    # Prepare data
-    print("\n2. Preparing data...")
-    X, y, feature_names = loader.prepare_data(train_df, is_training=True)
+    # For initial testing, you can limit to a subset
+    # Uncomment the next line to use only 100 objects for quick testing
+    # train_log = train_log.head(100)
 
-    print(f"\nDataset shape: {X.shape}")
-    print(f"Number of features: {len(feature_names)}")
-    print(f"Class distribution:\n  Non-TDE (0): {np.sum(y == 0)}\n  TDE (1): {np.sum(y == 1)}")
+    # Step 2: Extract features from lightcurves
+    print("\n[2/6] Extracting features from lightcurves...")
+    print("This may take a while...")
 
-    # Engineer features
-    print("\n3. Engineering features...")
-    X_engineered = engineer.engineer_features(X)
+    features_df = engineer.process_multiple_objects(
+        log_df=train_log,
+        lightcurve_loader_func=loader.load_lightcurve,
+        is_training=True
+    )
 
-    # Split data
-    print("\n4. Splitting data...")
+    # Save extracted features for future use
+    features_path = Path("data/processed/train_features.csv")
+    features_path.parent.mkdir(parents=True, exist_ok=True)
+    features_df.to_csv(features_path, index=False)
+    print(f"Features saved to {features_path}")
+
+    # Step 3: Prepare data for modeling
+    print("\n[3/6] Preparing data for modeling...")
+
+    # Separate features and target
+    X = features_df.drop(columns=['object_id', 'target'])
+    y = features_df['target'].values
+
+    print(f"Features shape: {X.shape}")
+    print(f"Target distribution: Non-TDE={np.sum(y == 0)}, TDE={np.sum(y == 1)}")
+
+    # Step 4: Split data
+    print("\n[4/6] Splitting data...")
     X_train, X_val, y_train, y_val = train_test_split(
-        X_engineered, y, test_size=0.2, random_state=42, stratify=y
+        X, y, test_size=0.2, random_state=42, stratify=y
     )
     print(f"Training set: {len(X_train)} samples")
     print(f"Validation set: {len(X_val)} samples")
 
-    # Train model
-    print("\n5. Training model...")
+    # Step 5: Train model
+    print("\n[5/6] Training model...")
 
     # Try XGBoost first, fall back to other models if not available
     model_preference = ['xgboost', 'lightgbm', 'balanced_rf', 'gradient_boosting']
@@ -262,31 +286,39 @@ def main():
     if classifier is None:
         raise ValueError("Could not create any classifier!")
 
-    # Evaluate
-    print("\n6. Evaluating model...")
+    # Step 6: Evaluate
+    print("\n[6/6] Evaluating model...")
     metrics = classifier.evaluate(X_val, y_val)
 
     # Cross-validation for more robust estimate
-    print("\n7. Performing cross-validation...")
+    print("\nPerforming cross-validation...")
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     cv_scores = cross_val_score(
-        classifier.model, X_engineered, y, cv=cv, scoring='f1', n_jobs=-1
+        classifier.model, X, y, cv=cv, scoring='f1', n_jobs=-1
     )
     print(f"Cross-validation F1 scores: {cv_scores}")
     print(f"Mean CV F1 Score: {cv_scores.mean():.4f} (+/- {cv_scores.std() * 2:.4f})")
 
     # Save model
-    print("\n8. Saving model...")
+    print("\nSaving model...")
     model_dir = Path("models")
     model_dir.mkdir(exist_ok=True)
     model_path = model_dir / "tde_classifier.pkl"
     classifier.save(str(model_path))
 
-    print("\n" + "=" * 60)
-    print("Training complete!")
+    # Save feature names for use in prediction
+    feature_names_path = model_dir / "feature_names.txt"
+    with open(feature_names_path, 'w') as f:
+        f.write('\n'.join(X.columns.tolist()))
+    print(f"Feature names saved to {feature_names_path}")
+
+    print("\n" + "=" * 70)
+    print(" TRAINING COMPLETE!")
+    print("=" * 70)
     print(f"Final F1 Score: {metrics['f1_score']:.4f}")
     print(f"Model saved to: {model_path}")
-    print("=" * 60)
+    print(f"Features saved to: {features_path}")
+    print("=" * 70)
 
 
 if __name__ == "__main__":
