@@ -4,6 +4,7 @@ Feature engineering for MALLORN TDE Classification Challenge
 Extracts features from:
 - Lightcurve time series data (per filter)
 - Object metadata (redshift, extinction)
+- Applies de-extinction correction to flux values
 """
 
 import numpy as np
@@ -13,6 +14,13 @@ from scipy import stats
 from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
+
+try:
+    from extinction import fitzpatrick99
+    HAS_EXTINCTION = True
+except ImportError:
+    HAS_EXTINCTION = False
+    print("Warning: 'extinction' package not found. De-extinction will be skipped.")
 
 
 class LightcurveFeatureEngineer:
@@ -24,11 +32,65 @@ class LightcurveFeatureEngineer:
     - Temporal: duration, number of observations, cadence statistics
     - Rise/Fall: peak time, rise/fall rates, rise/fall times
     - Flux-based: peak flux, total variation, SNR
+    - De-extinction: Corrects flux for galactic dust extinction
     """
 
-    def __init__(self):
+    def __init__(self, apply_deextinction: bool = True):
+        """
+        Initialize feature engineer.
+
+        Args:
+            apply_deextinction: Whether to apply de-extinction correction to fluxes
+        """
         self.filters = ['u', 'g', 'r', 'i', 'z', 'y']
         self.feature_names = []
+        self.apply_deextinction = apply_deextinction and HAS_EXTINCTION
+
+        # Effective wavelengths for each LSST filter (in Angstroms)
+        # Source: SVO Filter Profile Service
+        self.filter_wavelengths = {
+            'u': 3641.0,
+            'g': 4704.0,
+            'r': 6155.0,
+            'i': 7504.0,
+            'z': 8695.0,
+            'y': 10056.0
+        }
+
+        if self.apply_deextinction:
+            print("De-extinction correction will be applied to flux values")
+        elif not HAS_EXTINCTION:
+            print("De-extinction skipped: 'extinction' package not installed")
+
+    def deextinct_flux(self, flux: np.ndarray, ebv: float, filter_name: str) -> np.ndarray:
+        """
+        Apply de-extinction correction to flux values.
+
+        Uses Fitzpatrick99 extinction law to correct for Milky Way dust.
+
+        Args:
+            flux: Flux measurements (microjansky)
+            ebv: E(B-V) extinction coefficient
+            filter_name: Filter name (u, g, r, i, z, y)
+
+        Returns:
+            De-extincted flux values
+        """
+        if not self.apply_deextinction or ebv == 0:
+            return flux
+
+        # Get effective wavelength for this filter
+        eff_wavelength = np.array([self.filter_wavelengths[filter_name]])
+
+        # Calculate extinction in magnitudes using Fitzpatrick99 law
+        # R_V = 3.1 is the standard Milky Way value
+        A_lambda = fitzpatrick99(eff_wavelength, ebv * 3.1)
+
+        # Convert magnitude extinction to flux correction
+        # De-extincted flux = observed flux * 10^(A_lambda / 2.5)
+        flux_deextincted = flux * 10**(A_lambda[0] / 2.5)
+
+        return flux_deextincted
 
     def extract_filter_features(self, times: np.ndarray, fluxes: np.ndarray,
                                 flux_errs: np.ndarray, filter_name: str) -> Dict[str, float]:
@@ -175,7 +237,8 @@ class LightcurveFeatureEngineer:
         # Add metadata features
         features['Z'] = metadata.get('Z', 0)
         features['Z_err'] = metadata.get('Z_err', 0)
-        features['EBV'] = metadata.get('EBV', 0)
+        ebv = metadata.get('EBV', 0)
+        features['EBV'] = ebv
 
         # Extract features for each filter
         for filter_name in self.filters:
@@ -186,6 +249,12 @@ class LightcurveFeatureEngineer:
                 fluxes = filter_data['Flux'].values
                 flux_errs = filter_data['Flux_err'].values
 
+                # Apply de-extinction if enabled
+                if self.apply_deextinction:
+                    fluxes = self.deextinct_flux(fluxes, ebv, filter_name)
+                    # Also correct flux errors
+                    flux_errs = self.deextinct_flux(flux_errs, ebv, filter_name)
+
                 filter_features = self.extract_filter_features(times, fluxes, flux_errs, filter_name)
                 features.update(filter_features)
             else:
@@ -193,8 +262,19 @@ class LightcurveFeatureEngineer:
                 empty_features = self._get_empty_features(f"{filter_name}_")
                 features.update(empty_features)
 
-        # Cross-filter features
-        features.update(self._extract_cross_filter_features(lightcurve_df))
+        # Cross-filter features (on de-extincted data if applicable)
+        if self.apply_deextinction:
+            # Create de-extincted copy of lightcurve for cross-filter features
+            lc_deext = lightcurve_df.copy()
+            for filter_name in self.filters:
+                mask = lc_deext['Filter'] == filter_name
+                if mask.any():
+                    lc_deext.loc[mask, 'Flux'] = self.deextinct_flux(
+                        lc_deext.loc[mask, 'Flux'].values, ebv, filter_name
+                    )
+            features.update(self._extract_cross_filter_features(lc_deext))
+        else:
+            features.update(self._extract_cross_filter_features(lightcurve_df))
 
         return features
 
@@ -290,3 +370,8 @@ if __name__ == "__main__":
     print("  - Rise/Fall: peak flux, rise/fall times and rates")
     print("  - Signal quality: SNR, variability")
     print("  - Cross-filter: overall statistics")
+    print("\nDe-extinction:")
+    print("  - Applies Fitzpatrick99 extinction law to correct for galactic dust")
+    print("  - Uses EBV coefficient from metadata")
+    print("  - Filter-specific correction based on effective wavelengths")
+    print(f"\nDe-extinction package available: {HAS_EXTINCTION}")
