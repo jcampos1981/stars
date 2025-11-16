@@ -1,3 +1,11 @@
+# Editar .gitignore para permitir submission.csv
+echo "!submission.csv" >> .gitignore
+
+# Agregar, commitear y pushear
+git add submission.csv .gitignore
+git commit -m "Add submission.csv for download"
+git push
+
 # Python
 __pycache__/
 *.py[cod]
