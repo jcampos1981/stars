@@ -1,0 +1,104 @@
+================================================================================
+ PHASE 1 vs PHASE 2 COMPARISON ANALYSIS
+================================================================================
+
+MODEL COMPARISON:
+--------------------------------------------------------------------------------
+Phase 1:
+  Test Score: 0.5105
+  CV F1: 0.4850 ± 0.1042
+  Features: 139 total
+  Threshold: 0.4287
+
+Phase 2:
+  Test Score: 0.4927
+  CV F1: 0.4817 ± 0.1422
+  Features: 161 total (22 Phase 2)
+  Threshold: 0.4214
+  Score Difference: -0.0178 (-3.49%)
+
+
+PREDICTION STATISTICS:
+--------------------------------------------------------------------------------
+Total test objects: 7135
+
+Phase 1 predictions:
+  TDEs predicted: 312 (4.37%)
+  Non-TDEs predicted: 6823 (95.63%)
+
+Phase 2 predictions:
+  TDEs predicted: 340 (4.77%)
+  Non-TDEs predicted: 6795 (95.23%)
+
+
+PREDICTION CHANGES:
+--------------------------------------------------------------------------------
+Total predictions changed: 150 (2.10%)
+  Phase 1 TDE → Phase 2 Non-TDE: 61 (0.85%)
+  Phase 1 Non-TDE → Phase 2 TDE: 89 (1.25%)
+  Net change in TDEs: 28 (8.97%)
+
+
+HYPOTHESIS - WHY PHASE 2 PERFORMED WORSE:
+--------------------------------------------------------------------------------
+✗ Phase 2 became MORE AGGRESSIVE (more TDEs predicted)
+  - Added 28 TDE predictions
+  - This suggests Phase 2 features may be causing false positives
+  - Color evolution features might not be discriminative enough
+
+CV-Test Gap Analysis:
+  Phase 1: CV 0.4850 vs Test 0.5105 (gap: +0.0255)
+  Phase 2: CV 0.4817 vs Test 0.4927 (gap: +0.0110)
+
+
+PHASE 2 FEATURES ANALYSIS:
+--------------------------------------------------------------------------------
+Phase 2 features selected: 22 out of 44 total
+Selection rate: 50.0%
+
+Selected Phase 2 features:
+  - color_gi_early
+  - color_gi_late
+  - color_gi_peak
+  - color_gr_early
+  - color_gr_late
+  - color_gr_peak
+  - color_gr_variability
+  - color_iz_late
+  - color_iz_rate
+  - color_ri_late
+  - color_ri_peak
+  - color_ri_variability
+  - color_ug_early
+  - color_ug_evolution
+  - color_ug_peak
+  - color_ug_variability
+  - color_ur_early
+  - color_ur_peak
+  - sed_blue_red_ratio
+  - sed_peak_position
+  - uv_optical_evolution
+  - uv_optical_ratio_peak
+
+
+RECOMMENDATIONS:
+--------------------------------------------------------------------------------
+Based on this analysis, consider:
+
+Option A - ROLLBACK TO PHASE 1:
+  ✓ Phase 1 achieved better test score (0.5105)
+  ✓ More stable model with better generalization
+  → Focus on improving Phase 1 with hyperparameter tuning
+  → Try different thresholds or ensemble methods
+
+Option B - FIX PHASE 2:
+  → Investigate which Phase 2 features are problematic
+  → Remove low-impact Phase 2 features
+  → Adjust feature engineering (less strict color evolution)
+  → Retrain with different regularization
+
+Option C - SKIP TO PHASE 3:
+  → Try Multi-band coherence features instead
+  → Color features might not be the right approach
+  → Test if Phase 3 works better on top of Phase 1
+
